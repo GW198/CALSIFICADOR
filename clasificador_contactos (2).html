@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clasificador de contactos</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1d2330;--mut:#667085;--bd:#dfe3ea;--ac:#2557d6;--no:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--tx:#e8ebf2;--mut:#98a2b3;--bd:#2b3240;--ac:#6b93ff;--no:#f87171}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,sans-serif;padding:24px}
+.w{max-width:960px;margin:auto}h1{font-size:22px;margin:0 0 4px}p.s{color:var(--mut);margin:0 0 20px}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 12px}select,button,input{font:inherit}
+select{padding:6px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--tx);max-width:100%}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:9px 16px;cursor:pointer}
+.r{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+table{border-collapse:collapse;width:100%}th,td{padding:7px 10px;border-bottom:1px solid var(--bd);text-align:left}
+th{color:var(--mut);font-weight:600;font-size:13px}.box{max-height:380px;overflow:auto}
+tr.miss td:first-child{box-shadow:inset 3px 0 var(--no)}.m{color:var(--mut);font-size:13px}.hide{display:none}
+</style>
+</head>
+<body>
+<div class="w">
+<h1>Clasificador de contactos</h1>
+<p class="s">Sube tu Excel y descarga un archivo con una fila por número, en el formato de carga.</p>
+
+<div class="c"><h2>1. Archivo</h2><input type="file" id="f" accept=".xlsx,.xls,.xlsm,.csv"><div id="info" class="m" style="margin-top:8px"></div></div>
+
+<div class="c hide" id="s2"><h2>2. Columnas detectadas</h2>
+<div class="r"><span>Campaña (BDD):</span><select id="cc"></select><span>Número llamado:</span><select id="cn"></select></div>
+<div class="r"><span>Estado de respuesta:</span><select id="ce"></select><span>Disposition:</span><select id="cd"></select></div>
+<div class="m">Si la detección automática falló, corrígela aquí.</div></div>
+
+<div class="c hide" id="s3"><h2>3. Tipo Subestatus por clave de Disposition</h2>
+<div class="m" style="margin-bottom:8px">Las claves del catálogo se asignan solas. Las marcadas en rojo no están en el catálogo: elige su tipo. Puedes cambiar cualquiera.</div>
+<div class="box"><table><thead><tr><th>Disposition</th><th>Registros</th><th>Tipo Subestatus</th></tr></thead><tbody id="tb"></tbody></table></div>
+<div class="m" style="margin-top:8px">Las filas con Disposition vacío se cuentan como "No contacto".</div></div>
+
+<div class="c hide" id="s4"><h2>4. Generar</h2>
+<p class="m" style="margin:0 0 10px">Una fila por número, con la mejor tipificación (Contacto Efectivo &gt; Contacto No Efectivo &gt; No contacto).</p>
+<button id="go">Procesar y descargar Excel</button><div id="res" class="m" style="margin-top:10px"></div></div>
+</div>
+
+<script>
+const CAT=[
+["Contacto Efectivo","VENTA"],
+["Contacto No Efectivo","No Cumple Con Requisitos / Plan de Renta"],
+["Contacto No Efectivo","No Cumple Con Requisitos / Menor De Edad"],
+["Contacto No Efectivo","No Cumple Con Requisitos / Cliente Extranjero"],
+["Contacto Efectivo","Cliente molesto/No volver a marcar"],
+["Contacto Efectivo","Rechaza Oferta / Mala Experiencia"],
+["Contacto Efectivo","Cliente Cuelga"],
+["Contacto Efectivo","No le interesa"],
+["Contacto Efectivo","Interesado/Agenda"],
+["No contacto","Buzón"],["No contacto","Tono Ocupado"],["No contacto","Teléfono No Existe"],
+["No contacto","Teléfono Fuera de Servicio"],["No contacto","No Contesta"],["No contacto","Llamada cortada"]];
+const TIPOS=["Contacto Efectivo","Contacto No Efectivo","No contacto"];
+const nk=s=>String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s*\/\s*/g,'/').replace(/\s+/g,' ').trim();
+const CATMAP={};CAT.forEach(([t,s])=>CATMAP[nk(s)]=t);
+let rows=[],headers=[],fname='archivo',map={};
+const $=id=>document.getElementById(id);
+const norm=v=>{let s=String(v??'').trim().replace(/\.0+$/,'');return s.replace(/\D/g,'')||s};
+const dv=r=>String(r[$('cd').value]??'').trim();
+const esc=s=>s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+
+$('f').addEventListener('change',async e=>{
+  const file=e.target.files[0];if(!file)return;
+  fname=file.name.replace(/\.[^.]+$/,'');
+  const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+  rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
+  if(!rows.length){$('info').textContent='El archivo no tiene registros.';return}
+  headers=Object.keys(rows[0]);
+  $('info').textContent=rows.length.toLocaleString()+' registros cargados.';
+  const opts=headers.map(h=>`<option>${esc(h)}</option>`).join('');
+  ['cc','cn','ce','cd'].forEach(i=>$(i).innerHTML=opts);
+  const f=(re,d)=>headers.find(h=>re.test(h.trim()))||headers[d]||headers[0];
+  $('cc').value=f(/campa/i,0);$('cn').value=f(/n[uú]mero/i,2);
+  $('ce').value=f(/estado/i,3);$('cd').value=f(/^disposition/i,headers.length-1);
+  ['s2','s3','s4'].forEach(i=>$(i).classList.remove('hide'));
+  build();
+});
+$('cd').onchange=build;
+
+function build(){
+  const cnt={};rows.forEach(r=>{const v=dv(r);if(v)cnt[v]=(cnt[v]||0)+1});
+  map={};
+  const keys=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]);
+  keys.forEach(k=>{const t=CATMAP[nk(k)];if(t)map[k]=t});
+  $('tb').innerHTML=keys.map(k=>`<tr class="${map[k]?'':'miss'}"><td>${esc(k)}</td><td>${cnt[k].toLocaleString()}</td><td>
+  <select data-k="${esc(k)}"><option value="">— elegir —</option>${TIPOS.map(t=>`<option${map[k]===t?' selected':''}>${t}</option>`).join('')}</select></td></tr>`).join('')
+  ||'<tr><td colspan="3">No hay claves en esa columna.</td></tr>';
+  $('tb').querySelectorAll('select').forEach(s=>s.onchange=()=>{
+    if(s.value){map[s.dataset.k]=s.value;s.closest('tr').classList.remove('miss')}
+    else{delete map[s.dataset.k];s.closest('tr').classList.add('miss')}});
+}
+
+$('go').onclick=()=>{
+  const miss=$('tb').querySelectorAll('tr.miss').length;
+  if(miss){$('res').textContent='Faltan '+miss+' clave(s) por clasificar (marcadas en rojo).';return}
+  const cn=$('cn').value,cc=$('cc').value,ce=$('ce').value;
+  const rank={"Contacto Efectivo":3,"Contacto No Efectivo":2,"No contacto":1};
+  const agg=new Map();
+  rows.forEach(r=>{
+    const v=dv(r),t=v?map[v]:"No contacto",n=norm(r[cn]);
+    if(!agg.has(n))agg.set(n,{c:{"Contacto Efectivo":0,"Contacto No Efectivo":0,"No contacto":0},r,t,v});
+    const a=agg.get(n);a.c[t]++;
+    if(rank[t]>rank[a.t]){a.r=r;a.t=t;a.v=v}
+  });
+  const H=["ID Vendor","ID","BDD","DN","ELEGIBLE","Estatus","SubEstatus","Tipo Subestatus","VENTA","Contacto Efectivo's_Historico","Contacto No Efectivo's_Historico","No Contacto's_Historico","TOQUES"];
+  const out=[...agg.entries()].map(([n,a])=>{
+    const x=a.c["Contacto Efectivo"],y=a.c["Contacto No Efectivo"],z=a.c["No contacto"];
+    return {"ID Vendor":"","ID":1,"BDD":a.r[cc],"DN":n,"ELEGIBLE":1,"Estatus":a.r[ce],"SubEstatus":a.v,"Tipo Subestatus":a.t,"VENTA":"",
+      "Contacto Efectivo's_Historico":x,"Contacto No Efectivo's_Historico":y,"No Contacto's_Historico":z,"TOQUES":x+y+z};
+  });
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(out,{header:H}),'Datos');
+  XLSX.writeFile(wb,fname+'_clasificado.xlsx');
+  const t=k=>out.filter(x=>x["Tipo Subestatus"]===k).length;
+  $('res').textContent=`Listo: ${rows.length.toLocaleString()} registros convertidos en ${out.length.toLocaleString()} números únicos. CE ${t("Contacto Efectivo")} · CNE ${t("Contacto No Efectivo")} · NC ${t("No contacto")}.`;
+};
+</script>
+</body>
+</html>
